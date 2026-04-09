@@ -7,6 +7,8 @@ import time
 from googletrans import Translator
 from gtts import gTTS
 
+from streamlit_webrtc import webrtc_streamer, VideoTransformerBase
+import av
 
 # ---------------- MODEL ---------------- #
 model_dict = pickle.load(open('./model.p', 'rb'))
@@ -26,165 +28,131 @@ hands = mp_hands.Hands(
 
 # ---------------- LABELS ---------------- #
 labels_dict = {
-0:'A',1:'B',2:'C',3:'D',4:'E',5:'F',6:'G',7:'H',8:'I',9:'J',
-10:'K',11:'L',12:'M',13:'N',14:'O',15:'P',16:'Q',17:'R',
-18:'S',19:'T',20:'U',21:'V',22:'W',23:'X',24:'Y',25:'Z',
-26:'del',27:'nothing',28:'space'
+    0:'A',1:'B',2:'C',3:'D',4:'E',5:'F',6:'G',7:'H',8:'I',9:'J',
+    10:'K',11:'L',12:'M',13:'N',14:'O',15:'P',16:'Q',17:'R',
+    18:'S',19:'T',20:'U',21:'V',22:'W',23:'X',24:'Y',25:'Z',
+    26:'del',27:'nothing',28:'space'
 }
 
 # ---------------- UI ---------------- #
-st.markdown("<h1>🖐️ ASL Hand Sign Detection & Translation</h1>", unsafe_allow_html=True)
+st.title("🖐️ ASL Hand Sign Detection & Translation")
 
-# Session states
-if "detected_sentence" not in st.session_state:
-    st.session_state.detected_sentence = ""
+if "sentence" not in st.session_state:
+    st.session_state.sentence = ""
 
-if "last_detection_time" not in st.session_state:
-    st.session_state.last_detection_time = time.time()
+if "last_letter" not in st.session_state:
+    st.session_state.last_letter = ""
 
-if "last_detected_letter" not in st.session_state:
-    st.session_state.last_detected_letter = None
-
-if "translated_sentence" not in st.session_state:
-    st.session_state.translated_sentence = ""
+if "last_time" not in st.session_state:
+    st.session_state.last_time = time.time()
 
 translator = Translator()
 
 language_dict = {
-"English":"en","Hindi":"hi","Tamil":"ta",
-"French":"fr","German":"de","Spanish":"es",
-"Japanese":"ja","Korean":"ko"
+    "English":"en","Hindi":"hi","Tamil":"ta",
+    "French":"fr","German":"de","Spanish":"es",
+    "Japanese":"ja","Korean":"ko"
 }
 
-# Buttons
-col1, col2, col3 = st.columns(3)
+# ---------------- CAMERA CLASS ---------------- #
+class ASLTransformer(VideoTransformerBase):
+    def transform(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        img = cv2.flip(img, 1)
 
-with col1:
-    start_camera = st.button("Start Camera")
+        H, W, _ = img.shape
+        frame_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        results = hands.process(frame_rgb)
 
-with col2:
-    stop_camera = st.button("Stop Camera")
+        if results.multi_hand_landmarks:
+            hand_landmarks = results.multi_hand_landmarks[0]
 
-with col3:
-    clear_sentence = st.button("Clear Sentence")
+            mp_drawing.draw_landmarks(
+                img, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
-# Clear
-if clear_sentence:
-    st.session_state.detected_sentence = ""
-    st.session_state.translated_sentence = ""
+            x_, y_, data_aux = [], [], []
 
-# Display sentence
-sentence_placeholder = st.empty()
-sentence_placeholder.write(f"Detected Sentence: {st.session_state.detected_sentence}")
+            for lm in hand_landmarks.landmark:
+                x_.append(lm.x)
+                y_.append(lm.y)
 
-# Language selection
-selected_language = st.selectbox("Select Language", list(language_dict.keys()))
+            for i in range(len(hand_landmarks.landmark)):
+                data_aux.append(x_[i] - min(x_))
+                data_aux.append(y_[i] - min(y_))
 
-# Translation
-if st.button("Translate"):
-    text = st.session_state.detected_sentence.strip()
+            if len(data_aux) >= 42:
+                prediction = model.predict(
+                    np.asarray(data_aux[:42]).reshape(1, -1))
+                predicted_character = prediction[0]
 
-    if text:
-        translated = translator.translate(text, dest=language_dict[selected_language])
-        st.session_state.translated_sentence = translated.text
+                # Sentence logic
+                if predicted_character != st.session_state.last_letter:
+                    st.session_state.last_time = time.time()
+                    st.session_state.last_letter = predicted_character
 
-        tts = gTTS(st.session_state.translated_sentence, lang=language_dict[selected_language])
-        tts.save("translated_audio.mp3")
+                elif time.time() - st.session_state.last_time > 1:
 
-        st.audio("translated_audio.mp3")
+                    if predicted_character == "del":
+                        st.session_state.sentence = st.session_state.sentence[:-1]
 
-translated_placeholder = st.empty()
-translated_placeholder.write(f"Translated Text: {st.session_state.translated_sentence}")
+                    elif predicted_character == "space":
+                        st.session_state.sentence += " "
 
-# ---------------- CAMERA ---------------- #
-cap = cv2.VideoCapture(0)
+                    elif predicted_character != "nothing":
+                        st.session_state.sentence += predicted_character
 
-frame_window = st.image([])
-frame_count = 0
+                    st.session_state.last_time = time.time()
 
-while start_camera and not stop_camera:
-
-    ret, frame = cap.read()
-
-    if not ret:
-        st.warning("Camera error")
-        break
-
-    frame = cv2.flip(frame, 1)
-
-    H, W, _ = frame.shape
-
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = hands.process(frame_rgb)
-
-    data_aux = []
-    x_ = []
-    y_ = []
-
-    if results.multi_hand_landmarks:
-
-        hand_landmarks = results.multi_hand_landmarks[0]
-
-        mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-
-        for lm in hand_landmarks.landmark:
-            x_.append(lm.x)
-            y_.append(lm.y)
-
-        for i in range(len(hand_landmarks.landmark)):
-            data_aux.append(x_[i] - min(x_))
-            data_aux.append(y_[i] - min(y_))
-
-        x1 = int(min(x_) * W) - 10
-        y1 = int(min(y_) * H) - 10
-        x2 = int(max(x_) * W) - 10
-        y2 = int(max(y_) * H) - 10
-
-        frame_count += 1
-
-        if frame_count % 3 == 0:
-
-            prediction = model.predict(np.asarray(data_aux[:42]).reshape(1, -1))
-            predicted_character = prediction[0]
-
-            if predicted_character != st.session_state.last_detected_letter:
-
-                st.session_state.last_detection_time = time.time()
-                st.session_state.last_detected_letter = predicted_character
-
-            elif time.time() - st.session_state.last_detection_time > 1:
-
-                if predicted_character == "del":
-                    st.session_state.detected_sentence = st.session_state.detected_sentence[:-1]
-
-                elif predicted_character == "space":
-                    st.session_state.detected_sentence += " "
-
-                elif predicted_character == "nothing":
-                    pass
-
-                else:
-                    st.session_state.detected_sentence += predicted_character
-
-                st.session_state.last_detection_time = time.time()
-
-                sentence_placeholder.write(
-                    f"Detected Sentence: {st.session_state.detected_sentence}"
+                cv2.putText(
+                    img,
+                    str(predicted_character),
+                    (10, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0, 255, 0),
+                    2
                 )
 
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 3)
+        return img
 
-        cv2.putText(
-            frame,
-            str(st.session_state.last_detected_letter),
-            (x1, y1 - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1.2,
-            (0, 255, 0),
-            3
-        )
+# ---------------- BUTTONS ---------------- #
+col1, col2 = st.columns(2)
 
-    frame_window.image(frame, channels="BGR")
+with col1:
+    start = st.button("Start Camera")
 
-cap.release()
-cv2.destroyAllWindows()
+with col2:
+    clear = st.button("Clear Sentence")
+
+if clear:
+    st.session_state.sentence = ""
+
+# ---------------- CAMERA ---------------- #
+if start:
+    webrtc_streamer(
+        key="asl",
+        video_transformer_factory=ASLTransformer
+    )
+
+# ---------------- TEXT DISPLAY ---------------- #
+st.subheader("Detected Sentence:")
+st.write(st.session_state.sentence)
+
+# ---------------- TRANSLATION ---------------- #
+selected_language = st.selectbox(
+    "Select Language", list(language_dict.keys()))
+
+if st.button("Translate"):
+    text = st.session_state.sentence.strip()
+
+    if text:
+        translated = translator.translate(
+            text, dest=language_dict[selected_language])
+
+        st.subheader("Translated Text:")
+        st.write(translated.text)
+
+        tts = gTTS(translated.text, lang=language_dict[selected_language])
+        tts.save("audio.mp3")
+
+        st.audio("audio.mp3")
