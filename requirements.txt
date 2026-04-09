@@ -1,7 +1,7 @@
-streamlit
-opencv-python-headless==4.9.0.80
-mediapipe
-numpy
-scikit-learn
+streamlit==1.32.0
+streamlit-webrtc==0.47.7
+opencv-python-headless==4.8.1.78
+mediapipe==0.10.9
+numpy==1.26.4
+gtts
 googletrans==4.0.0-rc1
-gTTS
